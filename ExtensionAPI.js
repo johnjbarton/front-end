@@ -65,25 +65,6 @@ function defineCommonExtensionSymbols(apiPrivate)
         ViewShown: "view-shown-",
         ViewHidden: "view-hidden-"
     };
-    apiPrivate.Domains = [
-        "Inspector",
-         "Memory",
-         "Page",
-         "Runtime",
-         "Console",
-         "Network",
-         "Database",
-         "DOMStorage",
-         "ApplicationCache",
-         "FileSystem",
-         "DOM",
-         "CSS",
-         "Timeline",
-         "Debugger",
-         "DOMDebugger",
-         "Profiler",
-         "Worker"
-    ];
     
     apiPrivate.Commands = {
         AddAuditCategory: "addAuditCategory",
