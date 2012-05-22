@@ -127,6 +127,16 @@ String.prototype.removeURLFragment = function()
     return this.substring(0, fragmentIndex);
 }
 
+String.prototype.startsWith = function(substring)
+{
+    return !this.lastIndexOf(substring, 0);
+}
+
+String.prototype.endsWith = function(substring)
+{
+    return this.indexOf(substring, this.length - substring.length) !== -1;
+}
+
 Number.constrain = function(num, min, max)
 {
     if (num < min)
@@ -208,8 +218,12 @@ Object.defineProperty(Array.prototype, "upperBound",
     }
 });
 
-Object.defineProperty(Array.prototype, "partition",
-{
+Object.defineProperty(Uint32Array.prototype, "sort", {
+   value: Array.prototype.sort
+});
+
+(function() {
+var partition = {
     /**
      * @this {Array.<number>}
      * @param {function(number,number):boolean} comparator
@@ -238,10 +252,11 @@ Object.defineProperty(Array.prototype, "partition",
         swap(this, right, storeIndex);
         return storeIndex;
     }
-});
+};
+Object.defineProperty(Array.prototype, "partition", partition);
+Object.defineProperty(Uint32Array.prototype, "partition", partition);
 
-Object.defineProperty(Array.prototype, "sortRange",
-{
+var sortRange = {
     /**
      * @this {Array.<number>}
      * @param {function(number,number):boolean} comparator
@@ -268,7 +283,10 @@ Object.defineProperty(Array.prototype, "sortRange",
             quickSortFirstK(this, comparator, leftBound, rightBound, k);
         return this;
     }
-});
+}
+Object.defineProperty(Array.prototype, "sortRange", sortRange);
+Object.defineProperty(Uint32Array.prototype, "sortRange", sortRange);
+})();
 
 Object.defineProperty(Array.prototype, "qselect",
 {
@@ -716,10 +734,13 @@ Map.prototype = {
     
     /**
      * @param {Object} key
+     * @return {Object} value
      */
     remove: function(key)
     {
+        var result = this._map[key.__identifier];
         delete this._map[key.__identifier];
+        return result;
     },
     
     values: function()

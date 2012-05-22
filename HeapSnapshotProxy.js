@@ -78,11 +78,55 @@ WebInspector.HeapSnapshotRealWorker.prototype.__proto__ = WebInspector.HeapSnaps
 
 /**
  * @constructor
+ */
+WebInspector.AsyncTaskQueue = function()
+{
+    this._queue = [];
+    this._isTimerSheduled = false;
+}
+
+WebInspector.AsyncTaskQueue.prototype = {
+    /**
+     * @param {function()} task
+     */
+    addTask: function(task)
+    {
+        this._queue.push(task);
+        this._scheduleTimer();
+    },
+
+    _onTimeout: function()
+    {
+        this._isTimerSheduled = false;
+        var queue = this._queue;
+        this._queue = [];
+        for (var i = 0; i < queue.length; i++) {
+            try {
+                queue[i]();
+            } catch (e) {
+                console.error("Exception while running task: " + e.stack);
+            }
+        }
+        this._scheduleTimer();
+    },
+
+    _scheduleTimer: function()
+    {
+        if (this._queue.length && !this._isTimerSheduled) {
+            setTimeout(this._onTimeout.bind(this), 0);
+            this._isTimerSheduled = true;
+        }
+    }
+}
+
+/**
+ * @constructor
  * @extends {WebInspector.HeapSnapshotWorkerWrapper}
  */
 WebInspector.HeapSnapshotFakeWorker = function()
 {
     this._dispatcher = new WebInspector.HeapSnapshotWorkerDispatcher(window, this._postMessageFromWorker.bind(this));
+    this._asyncTaskQueue = new WebInspector.AsyncTaskQueue();
 }
 
 WebInspector.HeapSnapshotFakeWorker.prototype = {
@@ -93,7 +137,7 @@ WebInspector.HeapSnapshotFakeWorker.prototype = {
             if (this._dispatcher)
                 this._dispatcher.dispatchMessage({data: message});
         }
-        setTimeout(dispatch.bind(this), 0);
+        this._asyncTaskQueue.addTask(dispatch.bind(this));
     },
 
     terminate: function()
@@ -107,7 +151,7 @@ WebInspector.HeapSnapshotFakeWorker.prototype = {
         {
             this.dispatchEventToListeners("message", message);
         }
-        setTimeout(send.bind(this), 0);
+        this._asyncTaskQueue.addTask(send.bind(this));
     }
 };
 
@@ -300,57 +344,44 @@ WebInspector.HeapSnapshotProxyObject.prototype = {
 WebInspector.HeapSnapshotLoaderProxy = function(worker, objectId)
 {
     WebInspector.HeapSnapshotProxyObject.call(this, worker, objectId);
-    this._loading = false;
-    this._loaded = false;
+    this._onLoadCallbacks = [];
 }
 
 WebInspector.HeapSnapshotLoaderProxy.prototype = {
+    /**
+     * @param {function(WebInspector.HeapSnapshotProxy)} callback
+     */
     finishLoading: function(callback)
     {
-        if (!this._loading)
-            return false;
-        var loadCallbacks = this._onLoadCallbacks;
-        loadCallbacks.splice(0, 0, callback);
-        delete this._onLoadCallbacks;
-        this._loading = false;
-        this._loaded = true;
-        var self = this;
+        this._onLoadCallbacks.unshift(callback);
+
         function updateStaticData(snapshotProxy)
         {
             this.dispose();
-            snapshotProxy.updateStaticData(this._callLoadCallbacks.bind(this, loadCallbacks));
+            snapshotProxy.updateStaticData(callLoadCallbacks.bind(this));
+        }
+        function callLoadCallbacks(snapshotProxy)
+        {
+            for (var i = 0; i < this._onLoadCallbacks.length; ++i)
+                this._onLoadCallbacks[i](snapshotProxy);
+            this._onLoadCallbacks = null;
         }
         this.callFactoryMethod(updateStaticData.bind(this), "finishLoading", "WebInspector.HeapSnapshotProxy");
-        return true;
     },
 
-    _callLoadCallbacks: function(loadCallbacks, snapshotProxy)
-    {
-        for (var i = 0; i < loadCallbacks.length; ++i)
-            loadCallbacks[i](snapshotProxy);
-    },
-
-    get loaded()
-    {
-        return this._loaded;
-    },
-
+    /**
+     * @param {function(WebInspector.HeapSnapshotProxy)} callback
+     * @return {boolean}
+     */
     startLoading: function(callback)
     {
-        if (!this._loading) {
-            this._onLoadCallbacks = [callback];
-            this._loading = true;
-            return true;
-        } else {
-            this._onLoadCallbacks.push(callback);
-            return false;
-        }
+        var loadingHasJustStarted = !this._onLoadCallbacks.length;
+        this._onLoadCallbacks.push(callback);
+        return loadingHasJustStarted;
     },
 
     pushJSONChunk: function(chunk)
     {
-        if (!this._loading)
-            return;
         this.callMethod(null, "pushJSONChunk", chunk);
     }
 };
@@ -372,9 +403,24 @@ WebInspector.HeapSnapshotProxy.prototype = {
         this.callMethod(callback, "aggregates", sortedIndexes, key, filter);
     },
 
-    createDiff: function(className)
+    aggregatesForDiff: function(callback)
     {
-        return this.callFactoryMethod(null, "createDiff",  "WebInspector.HeapSnapshotsDiffProxy", className);
+        this.callMethod(callback, "aggregatesForDiff");
+    },
+
+    calculateSnapshotDiff: function(baseSnapshotId, baseSnapshotAggregates, callback)
+    {
+        this.callMethod(callback, "calculateSnapshotDiff", baseSnapshotId, baseSnapshotAggregates);
+    },
+
+    nodeClassName: function(snapshotObjectId, callback)
+    {
+        this.callMethod(callback, "nodeClassName", snapshotObjectId);
+    },
+
+    dominatorIdsForNode: function(nodeIndex, callback)
+    {
+        this.callMethod(callback, "dominatorIdsForNode", nodeIndex);
     },
 
     createEdgesProvider: function(nodeIndex, filter)
@@ -387,6 +433,16 @@ WebInspector.HeapSnapshotProxy.prototype = {
         return this.callFactoryMethod(null, "createRetainingEdgesProvider", "WebInspector.HeapSnapshotProviderProxy", nodeIndex, filter);
     },
 
+    createAddedNodesProvider: function(baseSnapshotId, className)
+    {
+        return this.callFactoryMethod(null, "createAddedNodesProvider", "WebInspector.HeapSnapshotProviderProxy", baseSnapshotId, className);
+    },
+
+    createDeletedNodesProvider: function(nodeIndexes)
+    {
+        return this.callFactoryMethod(null, "createDeletedNodesProvider", "WebInspector.HeapSnapshotProviderProxy", nodeIndexes);
+    },
+
     createNodesProvider: function(filter)
     {
         return this.callFactoryMethod(null, "createNodesProvider", "WebInspector.HeapSnapshotProviderProxy", filter);
@@ -397,9 +453,9 @@ WebInspector.HeapSnapshotProxy.prototype = {
         return this.callFactoryMethod(null, "createNodesProviderForClass", "WebInspector.HeapSnapshotProviderProxy", className, aggregatesKey);
     },
 
-    createNodesProviderForDominator: function(nodeIndex, filter)
+    createNodesProviderForDominator: function(nodeIndex)
     {
-        return this.callFactoryMethod(null, "createNodesProviderForDominator", "WebInspector.HeapSnapshotProviderProxy", nodeIndex, filter);
+        return this.callFactoryMethod(null, "createNodesProviderForDominator", "WebInspector.HeapSnapshotProviderProxy", nodeIndex);
     },
 
     dispose: function()
@@ -407,34 +463,14 @@ WebInspector.HeapSnapshotProxy.prototype = {
         this.disposeWorker();
     },
 
-    finishLoading: function()
-    {
-        return false;
-    },
-
-    get loaded()
-    {
-        return !!this._objectId;
-    },
-
     get nodeCount()
     {
         return this._staticData.nodeCount;
     },
 
-    nodeFieldValuesByIndex: function(fieldName, indexes, callback)
-    {
-        this.callMethod(callback, "nodeFieldValuesByIndex", fieldName, indexes);
-    },
-
     get nodeFlags()
     {
         return this._staticData.nodeFlags;
-    },
-
-    pushBaseIds: function(snapshotId, className, nodeIds)
-    {
-        this.callMethod(null, "pushBaseIds", snapshotId, className, nodeIds);
     },
 
     get rootNodeIndex()
@@ -450,12 +486,6 @@ WebInspector.HeapSnapshotProxy.prototype = {
             callback(this);
         }
         this.callMethod(dataReceived.bind(this), "updateStaticData");
-    },
-
-    startLoading: function(callback)
-    {
-        setTimeout(callback.bind(null, this), 0);
-        return false;
     },
 
     get totalSize()
@@ -481,14 +511,19 @@ WebInspector.HeapSnapshotProviderProxy = function(worker, objectId)
 }
 
 WebInspector.HeapSnapshotProviderProxy.prototype = {
+    nodePosition: function(snapshotObjectId, callback)
+    {
+        this.callMethod(callback, "nodePosition", snapshotObjectId);
+    },
+
     isEmpty: function(callback)
     {
         this.callGetter(callback, "isEmpty");
     },
 
-    serializeNextItems: function(count, callback)
+    serializeItemsRange: function(startPosition, endPosition, callback)
     {
-        this.callMethod(callback, "serializeNextItems", count);
+        this.callMethod(callback, "serializeItemsRange", startPosition, endPosition);
     },
 
     sortAndRewind: function(comparator, callback)
@@ -498,54 +533,3 @@ WebInspector.HeapSnapshotProviderProxy.prototype = {
 };
 
 WebInspector.HeapSnapshotProviderProxy.prototype.__proto__ = WebInspector.HeapSnapshotProxyObject.prototype;
-
-/**
- * @constructor
- * @extends {WebInspector.HeapSnapshotProxyObject}
- */
-WebInspector.HeapSnapshotPathFinderProxy = function(worker, objectId)
-{
-    WebInspector.HeapSnapshotProxyObject.call(this, worker, objectId);
-}
-
-WebInspector.HeapSnapshotPathFinderProxy.prototype = {
-    findNext: function(callback)
-    {
-        this.callMethod(callback, "findNext");
-    },
-
-    updateRoots: function(filter)
-    {
-        this.callMethod(null, "updateRoots", filter);
-    }
-};
-
-WebInspector.HeapSnapshotPathFinderProxy.prototype.__proto__ = WebInspector.HeapSnapshotProxyObject.prototype;
-
-/**
- * @constructor
- * @extends {WebInspector.HeapSnapshotProxyObject}
- */
-WebInspector.HeapSnapshotsDiffProxy = function(worker, objectId)
-{
-    WebInspector.HeapSnapshotProxyObject.call(this, worker, objectId);
-}
-
-WebInspector.HeapSnapshotsDiffProxy.prototype = {
-    calculate: function(callback)
-    {
-        this.callMethod(callback, "calculate");
-    },
-
-    pushBaseIds: function(baseIds)
-    {
-        this.callMethod(null, "pushBaseIds", baseIds);
-    },
-
-    pushBaseSelfSizes: function(baseSelfSizes)
-    {
-        this.callMethod(null, "pushBaseSelfSizes", baseSelfSizes);
-    }
-};
-
-WebInspector.HeapSnapshotsDiffProxy.prototype.__proto__ = WebInspector.HeapSnapshotProxyObject.prototype;

@@ -152,13 +152,28 @@ WebInspector.NetworkDispatcher = function(manager)
 
 WebInspector.NetworkDispatcher.prototype = {
     /**
+     * @param {NetworkAgent.Headers} headersMap
+     * @return {Array.<Object>}
+     */
+    _headersMapToHeadersArray: function(headersMap)
+    {
+        var result = [];
+        for (var name in headersMap) {
+            var values = headersMap[name].split("\n");
+            for (var i = 0; i < values.length; ++i)
+                result.push({ name: name, value: values[i] });
+        }
+        return result;
+    },
+
+    /**
      * @param {WebInspector.NetworkRequest} networkRequest
      * @param {NetworkAgent.Request} request
      */
     _updateNetworkRequestWithRequest: function(networkRequest, request)
     {
         networkRequest.requestMethod = request.method;
-        networkRequest.requestHeaders = request.headers;
+        networkRequest.requestHeaders = this._headersMapToHeadersArray(request.headers);
         networkRequest.requestFormData = request.postData;
     },
 
@@ -176,11 +191,11 @@ WebInspector.NetworkDispatcher.prototype = {
         networkRequest.mimeType = response.mimeType;
         networkRequest.statusCode = response.status;
         networkRequest.statusText = response.statusText;
-        networkRequest.responseHeaders = response.headers;
+        networkRequest.responseHeaders = this._headersMapToHeadersArray(response.headers);
         if (response.headersText)
             networkRequest.responseHeadersText = response.headersText;
         if (response.requestHeaders)
-            networkRequest.requestHeaders = response.requestHeaders;
+            networkRequest.requestHeaders = this._headersMapToHeadersArray(response.requestHeaders);
         if (response.requestHeadersText)
             networkRequest.requestHeadersText = response.requestHeadersText;
 
@@ -266,10 +281,9 @@ WebInspector.NetworkDispatcher.prototype = {
      * @param {NetworkAgent.Request} request
      * @param {NetworkAgent.Timestamp} time
      * @param {NetworkAgent.Initiator} initiator
-     * @param {ConsoleAgent.StackTrace=} stackTrace
      * @param {NetworkAgent.Response=} redirectResponse
      */
-    requestWillBeSent: function(requestId, frameId, loaderId, documentURL, request, time, initiator, stackTrace, redirectResponse)
+    requestWillBeSent: function(requestId, frameId, loaderId, documentURL, request, time, initiator, redirectResponse)
     {
         var networkRequest = this._inflightRequestsById[requestId];
         if (networkRequest) {
@@ -279,7 +293,7 @@ WebInspector.NetworkDispatcher.prototype = {
             this.responseReceived(requestId, frameId, loaderId, time, "Other", redirectResponse);
             networkRequest = this._appendRedirect(requestId, time, request.url);
         } else
-            networkRequest = this._createNetworkRequest(requestId, frameId, loaderId, request.url, documentURL, initiator, stackTrace);
+            networkRequest = this._createNetworkRequest(requestId, frameId, loaderId, request.url, documentURL, initiator);
         networkRequest.hasNetworkData = true;
         this._updateNetworkRequestWithRequest(networkRequest, request);
         networkRequest.startTime = time;
@@ -395,7 +409,7 @@ WebInspector.NetworkDispatcher.prototype = {
      */
     requestServedFromMemoryCache: function(requestId, frameId, loaderId, documentURL, time, initiator, cachedResource)
     {
-        var networkRequest = this._createNetworkRequest(requestId, frameId, loaderId, cachedResource.url, documentURL, initiator, null);
+        var networkRequest = this._createNetworkRequest(requestId, frameId, loaderId, cachedResource.url, documentURL, initiator);
         this._updateNetworkRequestWithCachedResource(networkRequest, cachedResource);
         networkRequest.cached = true;
         networkRequest.requestMethod = "GET";
@@ -427,7 +441,7 @@ WebInspector.NetworkDispatcher.prototype = {
             return;
 
         networkRequest.requestMethod = "GET";
-        networkRequest.requestHeaders = request.headers;
+        networkRequest.requestHeaders = this._headersMapToHeadersArray(request.headers);
         networkRequest.webSocketRequestKey3 = request.requestKey3;
         networkRequest.startTime = time;
 
@@ -447,8 +461,59 @@ WebInspector.NetworkDispatcher.prototype = {
 
         networkRequest.statusCode = response.status;
         networkRequest.statusText = response.statusText;
-        networkRequest.responseHeaders = response.headers;
+        networkRequest.responseHeaders = this._headersMapToHeadersArray(response.headers);
         networkRequest.webSocketChallengeResponse = response.challengeResponse;
+        networkRequest.responseReceivedTime = time;
+
+        this._updateNetworkRequest(networkRequest);
+    },
+
+    /**
+     * @param {NetworkAgent.RequestId} requestId
+     * @param {NetworkAgent.Timestamp} time
+     * @param {NetworkAgent.WebSocketFrame} response
+     */
+    webSocketFrameReceived: function(requestId, time, response)
+    {
+        var networkRequest = this._inflightRequestsById[requestId];
+        if (!networkRequest)
+            return;
+
+        networkRequest.addFrame(response, time);
+        networkRequest.responseReceivedTime = time;
+
+        this._updateNetworkRequest(networkRequest);
+    },
+
+    /**
+     * @param {NetworkAgent.RequestId} requestId
+     * @param {NetworkAgent.Timestamp} time
+     * @param {NetworkAgent.WebSocketFrame} response
+     */
+    webSocketFrameSent: function(requestId, time, response)
+    {
+        var networkRequest = this._inflightRequestsById[requestId];
+        if (!networkRequest)
+            return;
+
+        networkRequest.addFrame(response, time, true);
+        networkRequest.responseReceivedTime = time;
+
+        this._updateNetworkRequest(networkRequest);
+    },
+
+    /**
+     * @param {NetworkAgent.RequestId} requestId
+     * @param {NetworkAgent.Timestamp} time
+     * @param {string} errorMessage
+     */
+    webSocketFrameError: function(requestId, time, errorMessage)
+    {
+        var networkRequest = this._inflightRequestsById[requestId];
+        if (!networkRequest)
+            return;
+
+        networkRequest.addFrameError(errorMessage, time);
         networkRequest.responseReceivedTime = time;
 
         this._updateNetworkRequest(networkRequest);
@@ -482,7 +547,7 @@ WebInspector.NetworkDispatcher.prototype = {
             originalNetworkRequest.redirectSource = previousRedirects[previousRedirects.length - 1];
         this._finishNetworkRequest(originalNetworkRequest, time);
         var newNetworkRequest = this._createNetworkRequest(requestId, originalNetworkRequest.frameId, originalNetworkRequest.loaderId,
-             redirectURL, originalNetworkRequest.documentURL, originalNetworkRequest.initiator, originalNetworkRequest.stackTrace);
+             redirectURL, originalNetworkRequest.documentURL, originalNetworkRequest.initiator);
         newNetworkRequest.redirects = previousRedirects.concat(originalNetworkRequest);
         return newNetworkRequest;
     },
@@ -534,13 +599,11 @@ WebInspector.NetworkDispatcher.prototype = {
      * @param {string} url
      * @param {string} documentURL
      * @param {NetworkAgent.Initiator} initiator
-     * @param {ConsoleAgent.StackTrace=} stackTrace
      */
-    _createNetworkRequest: function(requestId, frameId, loaderId, url, documentURL, initiator, stackTrace)
+    _createNetworkRequest: function(requestId, frameId, loaderId, url, documentURL, initiator)
     {
         var networkRequest = new WebInspector.NetworkRequest(requestId, url, documentURL, frameId, loaderId);
         networkRequest.initiator = initiator;
-        networkRequest.stackTrace = stackTrace;
         return networkRequest;
     }
 }

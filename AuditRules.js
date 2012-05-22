@@ -107,7 +107,7 @@ WebInspector.AuditRules.GzipRule.prototype = {
 
     _isCompressed: function(request)
     {
-        var encodingHeader = request.responseHeaders["Content-Encoding"];
+        var encodingHeader = request.responseHeaderValue("Content-Encoding");
         if (!encodingHeader)
             return false;
 
@@ -517,12 +517,12 @@ WebInspector.AuditRules.CacheControlRule.prototype = {
 
     responseHeader: function(request, header)
     {
-        return request.responseHeaders[header];
+        return request.responseHeaderValue(header);
     },
 
     hasResponseHeader: function(request, header)
     {
-        return request.responseHeaders[header] !== undefined;
+        return request.responseHeaderValue(header) !== undefined;
     },
 
     isCompressible: function(request)
@@ -543,8 +543,8 @@ WebInspector.AuditRules.CacheControlRule.prototype = {
 
     responseHeaderMatch: function(request, header, regexp)
     {
-        return request.responseHeaders[header]
-            ? request.responseHeaders[header].match(new RegExp(regexp, "im"))
+        return request.responseHeaderValue(header)
+            ? request.responseHeaderValue(header).match(new RegExp(regexp, "im"))
             : undefined;
     },
 
@@ -1106,7 +1106,7 @@ WebInspector.AuditRules.VendorPrefixedCSSProperties.prototype = {
 
     visitProperty: function(styleSheet, property, result)
     {
-        if (property.name.indexOf(this._webkitPrefix) !== 0)
+        if (!property.name.startsWith(this._webkitPrefix))
             return;
 
         var normalPropertyName = property.name.substring(this._webkitPrefix.length).toLowerCase(); // Start just after the "-webkit-" prefix.
